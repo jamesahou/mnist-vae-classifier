@@ -8,6 +8,8 @@ import torch
 from torch.autograd import Variable
 from torchvision.utils import save_image
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import numpy as np
 
 def str2bool(v):
     # codes from : https://stackoverflow.com/questions/15008758/parsing-boolean-values-with-argparse
@@ -34,22 +36,33 @@ def config():
     args = parser.parse_args()
     return args
 
-def vae_loss(inputs, outputs):
-#def vae_loss(inputs, outputs, mean, logvar):
-    recon_loss_fc = nn.MSELoss()
-    recon_loss = recon_loss_fc(inputs, outputs)
-    #recon_loss = F.binary_cross_entropy(outputs.view(-1, 784), inputs.view(-1, 784), reduction='sum')
-    #kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
-    return recon_loss
+def show_image(img):
+    img = to_img(img)
+    npimg = img.numpy()
+    plt.imshow(np.transpose(npimg, (1, 2, 0)))
 
-#def t_loss(inputs, outputs, c, mean, var, labels):
-#def t_loss(inputs, outputs, mean, var, labels):
-def t_loss(inputs, outputs):
-    #classification_criterion = nn.CrossEntropyLoss()
-    #classification_loss = classification_criterion(c, labels)
-    recon_loss = vae_loss(inputs, outputs)
-    #return classification_loss + vae_l, kl_loss, recon_loss, classification_loss
-    return recon_loss
+def vae_loss(recon_x, x, mu, logvar):
+    # recon_x is the probability of a multivariate Bernoulli distribution p.
+    # -log(p(x)) is then the pixel-wise binary cross-entropy.
+    # Averaging or not averaging the binary cross-entropy over all pixels here
+    # is a subtle detail with big effect on training, since it changes the weight
+    # we need to pick for the other loss term by several orders of magnitude.
+    # Not averaging is the direct implementation of the negative log likelihood,
+    # but averaging makes the weight of the other loss term independent of the image resolution.
+    recon_loss = F.binary_cross_entropy(recon_x.view(-1, 784), x.view(-1, 784), reduction='sum')
+    
+    # KL-divergence between the prior distribution over latent vectors
+    # (the one we are going to sample from when generating new images)
+    # and the distribution estimated by the generator for the given image.
+    kldivergence = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+    
+    return recon_loss + 1 * kldivergence
+
+def t_loss(inputs, outputs, c, mean, var, labels):
+    criterion = nn.CrossEntropyLoss()
+    classification_loss = criterion(c, labels)
+    vae_l = vae_loss(outputs, inputs, mean, var)
+    return classification_loss + vae_l
 
 def train_vae(model, train_loader, device, args):
     model.train()
@@ -59,38 +72,41 @@ def train_vae(model, train_loader, device, args):
     train_loss_avg = []
     for epoch in range(args.epoch):
         loss_tracker = 0
+        train_loss_avg.append(0)
+        batches = 0
         for i, data in enumerate(train_loader, 0):
             inputs, labels = data
-            
-            inputs = Variable(inputs.to(device))
-            labels = Variable(labels.to(device))
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+
             optimizer.zero_grad()
-            #outputs, classification, mean, var = model(inputs)
-            outputs = model(inputs)
-            """
-            print("Input ", inputs)
-            print("Output ", outputs)"""
-            #loss, kl_loss, recon_loss, classification_loss = t_loss(inputs, outputs, classification, mean, var, labels)
-            #loss = t_loss(inputs, outputs)
-            loss = torch.mean((inputs-outputs)**2)
+
+            outputs, classification, mean, var = model(inputs)
+            loss = t_loss(inputs, outputs, classification, mean, var, labels)
+
             loss.backward()
-            """for name, parameter in model.named_parameters():
-                if parameter.grad is not None:
-                    print(name, torch.sum(parameter.grad))
-                else:
-                    print(name, "gradient is none")
-            """
             optimizer.step()
+            
             loss_tracker += loss.item()
-            """total = labels.size(0)
+            train_loss_avg[-1] += loss.item()
+            total = labels.size(0)
             _, predicted = torch.max(classification.data, 1)
             correct = (predicted == labels).sum().item()
             acc_list.append(correct / total)
-            """
+            
             if (i+1) % 100 == 0:
                 #print("Epoch: [%d/%d], Step [%d/%d], Running Loss: %.4f Loss: %.4f, Classification Accuracy: %.2f Reconstruction Loss: %.4f KL Loss: %.4f Class Loss: %.4f" %(epoch, args.epoch,
                 #    i+1, total_step, loss_tracker//100, loss.item(), correct/total*100, recon_loss.item(), kl_loss.item(), classification_loss.item()))
                 print("Epoch: [%d/%d], Step [%d/%d], Loss: %.4f" % (epoch, args.epoch, i+1, total_step, loss.item()))
+            batches += 1
+
+        train_loss_avg[-1] /= batches
+    
+    fig = plt.figure()
+    plt.plot(train_loss_avg)
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.show()
 
 def train_classifier(model, train_loader, device, args):
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
@@ -132,20 +148,27 @@ def test_cnn(model, test_loader, device, args):
     print('Accuracy of the network on the 10000 test images: %d %%' % (100 * correct / total))
 
 def test_vae(model, test_loader, device, args):
-    """# test classification
+    # test classification
+
     model.to('cpu')
     model.eval()
     correct = 0
     total = 0
+    loss_sum = 0
+    counter = 0
     with torch.no_grad():
         for data in test_loader:
             images, labels = data[0], data[1]
             outputs, classification, mean, var = model(images)
+
+            counter += 1
+            loss_sum += vae_loss(images, outputs, mean, var).item()
+
             _, predicted = torch.max(classification.data, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
     print('Accuracy of the network on the 10000 test images: %d %%' % (100 * correct / total))
-    """
+    print('The average reconstruction loss on the network is %d' % (loss_sum//counter))
 
     model.to('cpu')
     model.eval()
@@ -154,27 +177,6 @@ def test_vae(model, test_loader, device, args):
         z = torch.randn(64, args.zdim)
         sample = model.decoder(z)
         save_image(sample.view(64, 1, 28, 28), args.directory)
-
-def show_image(img):
-    img = to_img(img)
-    npimg = img.numpy()
-    plt.imshow(np.transpose(npimg, (1, 2, 0)))
-
-def visualise_output(images, model):
-
-    with torch.no_grad():
-    
-        images = images.to(device)
-        images, _, _ = model(images)
-        images = images.cpu()
-        images = to_img(images)
-        np_imagegrid = torchvision.utils.make_grid(images[1:50], 10, 5).numpy()
-        plt.imshow(np.transpose(np_imagegrid, (1, 2, 0)))
-        plt.show()
-
-def to_img(x):
-    x = x.clamp(0, 1)
-    return x
 
 
 if __name__ == "__main__":
@@ -192,18 +194,12 @@ if __name__ == "__main__":
             model = VAE(args).to(device)
             train_vae(model, train_loader, device, args)
             if args.test:
-                #test_vae(model, test_loader, device, args)
+                test_vae(model, test_loader, device, args)
                 model.train()
                 images, labels = iter(test_loader).next()
                 images = images.to(device)
                 labels = labels.to(device)
-                print('Original images')
-                show_image(torchvision.utils.make_grid(images[1:50],10,5))
-                plt.show()
-
-                # Reconstruct and visualise the images using the vae
-                print('VAE reconstruction:')
-                visualise_output(images, model)
+                
 
         elif args.model == 'classifier':
             model = CNN(args).to(device)
