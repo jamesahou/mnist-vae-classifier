@@ -104,7 +104,7 @@ class CNN(nn.Module):
     def forward(self, x):
         out = self.extractor(x)
         out = out.view(-1, 128*7*7)
-        out = self.classifier(x)
+        out = self.classifier(out)
         return out
 
 if __name__ == "__main__":

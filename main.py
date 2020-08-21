@@ -140,12 +140,12 @@ def test_cnn(model, test_loader, device, args):
     with torch.no_grad():
         for data in test_loader:
             images, labels = data[0].to(device), data[1].to(device)
-            outputs, classification, mean, var = model(images)
+            outputs= model(images)
             _, predicted = torch.max(outputs.data, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
     
-    print('Accuracy of the network on the 10000 test images: %d %%' % (100 * correct / total))
+    print('Accuracy of the network on the 10000 test images: %.4f %%' % (100 * correct / total))
 
 def test_vae(model, test_loader, device, args):
     # test classification
@@ -167,7 +167,7 @@ def test_vae(model, test_loader, device, args):
             _, predicted = torch.max(classification.data, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
-    print('Accuracy of the network on the 10000 test images: %d %%' % (100 * correct / total))
+    print('Accuracy of the network on the 10000 test images: %.4f %%' % (100 * correct / total))
     print('The average reconstruction loss on the network is %d' % (loss_sum//counter))
 
     model.to('cpu')
@@ -199,11 +199,10 @@ if __name__ == "__main__":
                 images, labels = iter(test_loader).next()
                 images = images.to(device)
                 labels = labels.to(device)
-                
 
         elif args.model == 'classifier':
             model = CNN(args).to(device)
-            train_vae(model, train_loader, device, args)
+            train_classifier(model, train_loader, device, args)
             if args.test:
                 test_cnn(model, test_loader, device, args)
     
