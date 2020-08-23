@@ -11,6 +11,10 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import numpy as np
 
+log = []
+loss_curves = []
+acc_curves = []
+
 def str2bool(v):
     # codes from : https://stackoverflow.com/questions/15008758/parsing-boolean-values-with-argparse
 
@@ -32,7 +36,10 @@ def config():
     parser.add_argument('--model', default='vae', type=str)
     parser.add_argument('--test', default=True, type=str2bool)
     parser.add_argument('--train', default=True, type=str2bool)
-    parser.add_argument('--directory', default='samples/sample.png', type=str)
+    parser.add_argument('--directory', default='samples/sample.jpg', type=str)
+    parser.add_argument('--lam', default=1.0, type=float)
+    parser.add_argument('--eps', default=0, type=float)
+    parser.add_argument('--fig_name', default='normal.jpg', type=str)
     args = parser.parse_args()
     return args
 
@@ -58,11 +65,11 @@ def vae_loss(recon_x, x, mu, logvar):
     
     return recon_loss + 1 * kldivergence
 
-def t_loss(inputs, outputs, c, mean, var, labels):
+def t_loss(inputs, outputs, c, mean, var, labels, args):
     criterion = nn.CrossEntropyLoss()
     classification_loss = criterion(c, labels)
     vae_l = vae_loss(outputs, inputs, mean, var)
-    return classification_loss + vae_l
+    return classification_loss + args.lam * vae_l
 
 def train_vae(model, train_loader, device, args):
     model.train()
@@ -70,9 +77,13 @@ def train_vae(model, train_loader, device, args):
     total_step = len(train_loader)
     acc_list = []
     train_loss_avg = []
+    print("Lambda: " + str(args.lam))
+    log.append("Lambda: " + str(args.lam) + "\n")
+    train_acc_avg = []
     for epoch in range(args.epoch):
         loss_tracker = 0
         train_loss_avg.append(0)
+        train_acc_avg.append(0)
         batches = 0
         for i, data in enumerate(train_loader, 0):
             inputs, labels = data
@@ -82,7 +93,7 @@ def train_vae(model, train_loader, device, args):
             optimizer.zero_grad()
 
             outputs, classification, mean, var = model(inputs)
-            loss = t_loss(inputs, outputs, classification, mean, var, labels)
+            loss = t_loss(inputs, outputs, classification, mean, var, labels, args)
 
             loss.backward()
             optimizer.step()
@@ -94,19 +105,29 @@ def train_vae(model, train_loader, device, args):
             correct = (predicted == labels).sum().item()
             acc_list.append(correct / total)
             
+            train_acc_avg[-1] += (correct/total)
+            
             if (i+1) % 100 == 0:
                 #print("Epoch: [%d/%d], Step [%d/%d], Running Loss: %.4f Loss: %.4f, Classification Accuracy: %.2f Reconstruction Loss: %.4f KL Loss: %.4f Class Loss: %.4f" %(epoch, args.epoch,
                 #    i+1, total_step, loss_tracker//100, loss.item(), correct/total*100, recon_loss.item(), kl_loss.item(), classification_loss.item()))
-                print("Epoch: [%d/%d], Step [%d/%d], Loss: %.4f" % (epoch, args.epoch, i+1, total_step, loss.item()))
+                print("Epoch: [%d/%d], Step [%d/%d], Loss: %.4f,  Classification Accuracy: %.2f" % (epoch, args.epoch, i+1, total_step, loss.item(), correct/total*100))
+                if args.model == 'run-thru':
+                    file = open("log.txt", 'w')
+                    log.append("Epoch: [%d/%d], Step [%d/%d], Loss: %.4f,  Classification Accuracy: %.2f\n" % (epoch, args.epoch, i+1, total_step, loss.item(), correct/total*100))
+                    for line in log:
+                        file.write(line)
+                    file.close()
+
             batches += 1
 
         train_loss_avg[-1] /= batches
+        train_acc_avg[-1] /= batches
+
+        if abs(train_loss_avg[-1] - train_loss_avg[len(train_loss_avg)-2])/train_loss_avg[-1] < args.eps:
+            break
     
-    fig = plt.figure()
-    plt.plot(train_loss_avg)
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.show()
+    acc_curves.append(train_acc_avg)
+    loss_curves.append(train_loss_avg)
 
 def train_classifier(model, train_loader, device, args):
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
@@ -132,6 +153,7 @@ def train_classifier(model, train_loader, device, args):
             if (i+1) % 100 == 0:
                 print("Epoch: [%d/%d], Step [%d/%d], Running Loss: %.4f Loss: %.4f, Classification Accuracy: %.2f" %(epoch, args.epoch,
                     i+1, total_step, loss_tracker//100, loss.item(), correct/total*100))
+                
 
 def test_cnn(model, test_loader, device, args):
     correct = 0
@@ -169,6 +191,13 @@ def test_vae(model, test_loader, device, args):
             correct += (predicted == labels).sum().item()
     print('Accuracy of the network on the 10000 test images: %.4f %%' % (100 * correct / total))
     print('The average reconstruction loss on the network is %d' % (loss_sum//counter))
+    if args.model == 'run-thru':
+        file = open("log.txt", 'w')
+        log.append('Accuracy of the network on the 10000 test images: %.4f %%\n' % (100 * correct / total))
+        log.append('The average reconstruction loss on the network is %d\n' % (loss_sum//counter))
+        for line in log:
+            file.write(line)
+        file.close()
 
     model.to('cpu')
     model.eval()
@@ -178,6 +207,35 @@ def test_vae(model, test_loader, device, args):
         sample = model.decoder(z)
         save_image(sample.view(64, 1, 28, 28), args.directory)
 
+def loop_thru_lambda(trainset, train_loader, testset, test_loader, device, args):
+    lambdas = [1, 0.5, 0.2, 0.1, 0.01, 0.001, 0.0001, 1e-5, 1e-6, 0]
+    for i, lam in enumerate(lambdas):
+        args.lam = lam
+        args.fig_name = str(lam) + "_lambda_model.jpg"
+        args.directory = "samples/" + str(lam) + "-vae.jpg"
+        model = VAE(args).to(device)
+        train_vae(model, train_loader, device, args)
+        test_vae(model, test_loader, device, args)
+
+    plt.figure()
+    for i, lam in enumerate(lambdas):
+        plt.plot(acc_curves[i], label="Lambda: %f" % lambdas[i])    
+    plt.title("Accuracy")
+    plt.xlabel("Epoch")
+    plt.ylabel("Accuracy")
+    plt.legend(loc="lower right")
+    plt.savefig("accuracy.jpg")
+
+    plt.figure()
+    for i, lam in enumerate(lambdas):
+        plt.plot(loss_curves[i], label="Lambda: %f" % lambdas[i])
+    plt.title("Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.legend(loc="upper right")
+    plt.savefig("loss.jpg")
+    plt.show()
+    
 
 if __name__ == "__main__":
     args = config()
@@ -205,4 +263,7 @@ if __name__ == "__main__":
             train_classifier(model, train_loader, device, args)
             if args.test:
                 test_cnn(model, test_loader, device, args)
+        
+        elif args.model == 'run-thru':
+            loop_thru_lambda(trainset, train_loader, testset, test_loader, device, args)
     
