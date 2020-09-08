@@ -10,10 +10,12 @@ from torchvision.utils import save_image
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import numpy as np
+import time
 
 log = []
 loss_curves = []
 acc_curves = []
+classification_loss_curves = []
 
 def str2bool(v):
     # codes from : https://stackoverflow.com/questions/15008758/parsing-boolean-values-with-argparse
@@ -36,10 +38,11 @@ def config():
     parser.add_argument('--model', default='vae', type=str)
     parser.add_argument('--test', default=True, type=str2bool)
     parser.add_argument('--train', default=True, type=str2bool)
-    parser.add_argument('--directory', default='samples/sample.jpg', type=str)
+    parser.add_argument('--directory', default='samples/sample.png', type=str)
     parser.add_argument('--lam', default=1.0, type=float)
     parser.add_argument('--eps', default=0, type=float)
-    parser.add_argument('--fig_name', default='normal.jpg', type=str)
+    parser.add_argument('--fig_name', default='normal.png', type=str)
+    parser.add_argument('--classification', default=True, type=str2bool)
     args = parser.parse_args()
     return args
 
@@ -56,7 +59,8 @@ def vae_loss(recon_x, x, mu, logvar):
     # we need to pick for the other loss term by several orders of magnitude.
     # Not averaging is the direct implementation of the negative log likelihood,
     # but averaging makes the weight of the other loss term independent of the image resolution.
-    recon_loss = F.binary_cross_entropy(recon_x.view(-1, 784), x.view(-1, 784), reduction='sum')
+
+    recon_loss = F.binary_cross_entropy(recon_x.view(-1, 3*32*32), x.view(-1, 3*32*32), reduction='sum')
     
     # KL-divergence between the prior distribution over latent vectors
     # (the one we are going to sample from when generating new images)
@@ -67,9 +71,14 @@ def vae_loss(recon_x, x, mu, logvar):
 
 def t_loss(inputs, outputs, c, mean, var, labels, args):
     criterion = nn.CrossEntropyLoss()
-    classification_loss = criterion(c, labels)
+    classification_loss = criterion(c, labels)    
+    if args.classification:
+        c_factor = 1
+    else:
+        c_factor = 0
+
     vae_l = vae_loss(outputs, inputs, mean, var)
-    return classification_loss + args.lam * vae_l
+    return classification_loss * c_factor + args.lam * vae_l, classification_loss
 
 def train_vae(model, train_loader, device, args):
     model.train()
@@ -77,13 +86,17 @@ def train_vae(model, train_loader, device, args):
     total_step = len(train_loader)
     acc_list = []
     train_loss_avg = []
+    classification_loss = []
     print("Lambda: " + str(args.lam))
     log.append("Lambda: " + str(args.lam) + "\n")
     train_acc_avg = []
     for epoch in range(args.epoch):
+        if epoch == 0:
+            start_time = time.time()
         loss_tracker = 0
         train_loss_avg.append(0)
         train_acc_avg.append(0)
+        classification_loss.append(0)
         batches = 0
         for i, data in enumerate(train_loader, 0):
             inputs, labels = data
@@ -93,13 +106,14 @@ def train_vae(model, train_loader, device, args):
             optimizer.zero_grad()
 
             outputs, classification, mean, var = model(inputs)
-            loss = t_loss(inputs, outputs, classification, mean, var, labels, args)
+            loss, c_loss = t_loss(inputs, outputs, classification, mean, var, labels, args)
 
             loss.backward()
             optimizer.step()
             
             loss_tracker += loss.item()
             train_loss_avg[-1] += loss.item()
+            classification_loss[-1] += c_loss.item()
             total = labels.size(0)
             _, predicted = torch.max(classification.data, 1)
             correct = (predicted == labels).sum().item()
@@ -120,12 +134,20 @@ def train_vae(model, train_loader, device, args):
 
             batches += 1
 
+        classification_loss[-1] /= batches
         train_loss_avg[-1] /= batches
         train_acc_avg[-1] /= batches
+
+        if epoch == 0:
+            total_time = int(time.time() - start_time)
+            minutes = total_time // 60
+            seconds = total_time - minutes * 60
+            print("Time per Epoch %dmin %dsec" %(minutes, seconds))
 
         if abs(train_loss_avg[-1] - train_loss_avg[len(train_loss_avg)-2])/train_loss_avg[-1] < args.eps:
             break
     
+    classification_loss_curves.append(classification_loss)
     acc_curves.append(train_acc_avg)
     loss_curves.append(train_loss_avg)
 
@@ -205,14 +227,15 @@ def test_vae(model, test_loader, device, args):
     with torch.no_grad():
         z = torch.randn(64, args.zdim)
         sample = model.decoder(z)
-        save_image(sample.view(64, 1, 28, 28), args.directory)
+        save_image(sample.view(64, 1, 32, 32), args.directory)
 
 def loop_thru_lambda(trainset, train_loader, testset, test_loader, device, args):
-    lambdas = [1, 0.5, 0.2, 0.1, 0.01, 0.001, 0.0001, 1e-5, 1e-6, 0]
+    #lambdas = [1, 0.5, 0.2, 0.1, 0.01, 0.001, 0.0001, 1e-5, 1e-6, 0]
+    lambdas = [1]
     for i, lam in enumerate(lambdas):
         args.lam = lam
-        args.fig_name = str(lam) + "_lambda_model.jpg"
-        args.directory = "samples/" + str(lam) + "-vae.jpg"
+        args.fig_name = str(lam) + "_lambda_model.png"
+        args.directory = "samples/" + str(lam) + "-vae.png"
         model = VAE(args).to(device)
         train_vae(model, train_loader, device, args)
         test_vae(model, test_loader, device, args)
@@ -234,15 +257,28 @@ def loop_thru_lambda(trainset, train_loader, testset, test_loader, device, args)
     plt.ylabel("Loss")
     plt.legend(loc="upper right")
     plt.savefig("loss.jpg")
-    plt.show()
     
+    if args.classification:
+        plt.figure()
+        for i, lam in enumerate(lambdas):
+            plt.plot(classification_loss_curves[i], label="Lambda: %f" % lambdas[i])
+        plt.title("Classification Loss")
+        plt.xlabel("Epoch")
+        plt.ylabel("C_Loss")
+        plt.legend(loc="upper right")
+        plt.savefig("c_loss.jpg")
+        plt.show()
 
 if __name__ == "__main__":
     args = config()
     device = torch.device("cuda:0" if (torch.cuda.is_available() and args.cuda) else "cpu")
 
-    transform = transforms.Compose(
-        [transforms.ToTensor()]) 
+    #transform = transforms.Compose(
+    #    [transforms.ToTensor()]) 
+    transform = transforms.Compose([transforms.Resize([32, 32]),
+                                transforms.ToTensor(),
+                                transforms.Lambda(lambda x: x.repeat(3, 1, 1)),  # gray -> GRB 3 channel (lambda function)
+                                transforms.Normalize(mean=[0.0, 0.0, 0.0], std=[1.0, 1.0, 1.0])])  # for grayscale images
     trainset = datasets.MNIST('./data', train=True, download=True, transform=transform)
     train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True)
     testset = datasets.MNIST('./data', train=False, transform=transform, download=True)
@@ -266,4 +302,7 @@ if __name__ == "__main__":
         
         elif args.model == 'run-thru':
             loop_thru_lambda(trainset, train_loader, testset, test_loader, device, args)
-    
+
+        elif args.model == 'print':
+            model = VAE(args)
+            model.display()
