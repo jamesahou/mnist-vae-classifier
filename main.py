@@ -16,6 +16,8 @@ log = []
 loss_curves = []
 acc_curves = []
 classification_loss_curves = []
+#lambdas = [1, 0.5, 0.2, 0.1, 0.01, 0.001, 0.0001, 1e-5, 1e-6, 0]
+lambdas = [1, 0.1, 0.01, 0.001, 0.0001, 1e-5, 1e-6, 0]
 
 def str2bool(v):
     # codes from : https://stackoverflow.com/questions/15008758/parsing-boolean-values-with-argparse
@@ -43,6 +45,7 @@ def config():
     parser.add_argument('--eps', default=0, type=float)
     parser.add_argument('--fig_name', default='normal.png', type=str)
     parser.add_argument('--classification', default=True, type=str2bool)
+    parser.add_argument('--interval', default=10, type=int)
     args = parser.parse_args()
     return args
 
@@ -60,7 +63,8 @@ def vae_loss(recon_x, x, mu, logvar):
     # Not averaging is the direct implementation of the negative log likelihood,
     # but averaging makes the weight of the other loss term independent of the image resolution.
 
-    recon_loss = F.binary_cross_entropy(recon_x.view(-1, 3*32*32), x.view(-1, 3*32*32), reduction='sum')
+    #recon_loss = F.binary_cross_entropy(recon_x.view(-1, 3*32*32), x.view(-1, 3*32*32), reduction='sum')
+    recon_loss = F.mse_loss(recon_x.view(-1, 3*32*32), x.view(-1, 3*32*32), reduction='sum')
     
     # KL-divergence between the prior distribution over latent vectors
     # (the one we are going to sample from when generating new images)
@@ -227,11 +231,9 @@ def test_vae(model, test_loader, device, args):
     with torch.no_grad():
         z = torch.randn(64, args.zdim)
         sample = model.decoder(z)
-        save_image(sample.view(64, 1, 32, 32), args.directory)
+        save_image(sample.view(64, 3, 32, 32), args.directory)
 
 def loop_thru_lambda(trainset, train_loader, testset, test_loader, device, args):
-    #lambdas = [1, 0.5, 0.2, 0.1, 0.01, 0.001, 0.0001, 1e-5, 1e-6, 0]
-    lambdas = [1]
     for i, lam in enumerate(lambdas):
         args.lam = lam
         args.fig_name = str(lam) + "_lambda_model.png"
@@ -247,7 +249,7 @@ def loop_thru_lambda(trainset, train_loader, testset, test_loader, device, args)
     plt.xlabel("Epoch")
     plt.ylabel("Accuracy")
     plt.legend(loc="lower right")
-    plt.savefig("accuracy.jpg")
+    plt.savefig("accuracy.png")
 
     plt.figure()
     for i, lam in enumerate(lambdas):
@@ -256,8 +258,8 @@ def loop_thru_lambda(trainset, train_loader, testset, test_loader, device, args)
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
     plt.legend(loc="upper right")
-    plt.savefig("loss.jpg")
-    
+    plt.savefig("loss.png")
+
     if args.classification:
         plt.figure()
         for i, lam in enumerate(lambdas):
@@ -267,7 +269,173 @@ def loop_thru_lambda(trainset, train_loader, testset, test_loader, device, args)
         plt.ylabel("C_Loss")
         plt.legend(loc="upper right")
         plt.savefig("c_loss.jpg")
-        plt.show()
+    
+    plt.show()
+
+def loop_epoch(model, train_loader, test_loader, device, args):
+    result_acc = []
+    result_vae = []
+    tested_epochs = []
+
+    model.train()
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
+    total_step = len(train_loader)
+    acc_list = []
+    train_loss_avg = []
+    classification_loss = []
+    print("Lambda: " + str(args.lam))
+    log.append("Lambda: " + str(args.lam) + "\n")
+    train_acc_avg = []
+    for epoch in range(args.epoch):
+        if epoch == 0:
+            start_time = time.time()
+        loss_tracker = 0
+        train_loss_avg.append(0)
+        train_acc_avg.append(0)
+        classification_loss.append(0)
+        batches = 0
+        for i, data in enumerate(train_loader, 0):
+            inputs, labels = data
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+
+            optimizer.zero_grad()
+
+            outputs, classification, mean, var = model(inputs)
+            loss, c_loss = t_loss(inputs, outputs, classification, mean, var, labels, args)
+
+            loss.backward()
+            optimizer.step()
+            
+            loss_tracker += loss.item()
+            train_loss_avg[-1] += loss.item()
+            classification_loss[-1] += c_loss.item()
+            total = labels.size(0)
+            _, predicted = torch.max(classification.data, 1)
+            correct = (predicted == labels).sum().item()
+            acc_list.append(correct / total)
+            
+            train_acc_avg[-1] += (correct/total)
+            
+            if (i+1) % 100 == 0:
+                #print("Epoch: [%d/%d], Step [%d/%d], Running Loss: %.4f Loss: %.4f, Classification Accuracy: %.2f Reconstruction Loss: %.4f KL Loss: %.4f Class Loss: %.4f" %(epoch, args.epoch,
+                #    i+1, total_step, loss_tracker//100, loss.item(), correct/total*100, recon_loss.item(), kl_loss.item(), classification_loss.item()))
+                print("Epoch: [%d/%d], Step [%d/%d], Loss: %.4f,  Classification Accuracy: %.2f" % (epoch, args.epoch, i+1, total_step, loss.item(), correct/total*100))
+                if args.model == 'run-thru':
+                    file = open("log.txt", 'w')
+                    log.append("Epoch: [%d/%d], Step [%d/%d], Loss: %.4f,  Classification Accuracy: %.2f\n" % (epoch, args.epoch, i+1, total_step, loss.item(), correct/total*100))
+                    for line in log:
+                        file.write(line)
+                    file.close()
+
+            batches += 1
+
+        classification_loss[-1] /= batches
+        train_loss_avg[-1] /= batches
+        train_acc_avg[-1] /= batches
+
+        if (epoch+1) % args.interval == 0:
+            model.to('cpu')
+            model.eval()
+            correct = 0
+            total = 0
+            loss_sum = 0
+            counter = 0
+            with torch.no_grad():
+                for data in test_loader:
+                    images, labels = data[0], data[1]
+                    outputs, classification, mean, var = model(images)
+
+                    counter += 1
+                    loss_sum += vae_loss(images, outputs, mean, var).item()
+
+                    _, predicted = torch.max(classification.data, 1)
+                    total += labels.size(0)
+                    correct += (predicted == labels).sum().item()
+            print('Accuracy of the network on the 10000 test images: %.4f %%' % (100 * correct / total))
+            print('The average reconstruction loss on the network is %d' % (loss_sum//counter))
+
+            tested_epochs.append(epoch+1)
+            result_acc.append(100 * correct / total)
+            result_vae.append(loss_sum//counter)
+
+            if args.model == 'run-thru':
+                file = open("log.txt", 'w')
+                log.append('Accuracy of the network on the 10000 test images: %.4f %%\n' % (100 * correct / total))
+                log.append('The average reconstruction loss on the network is %d\n' % (loss_sum//counter))
+                for line in log:
+                    file.write(line)
+                file.close()
+
+            model.to('cpu')
+            model.eval()
+            # sample images
+            with torch.no_grad():
+                z = torch.randn(64, args.zdim)
+                sample = model.decoder(z)
+                save_image(sample.view(64, 3, 32, 32), "epoch_samples/epoch_sample_%d.png" % epoch)
+            model.train()
+            model.to(device)
+
+        if abs(train_loss_avg[-1] - train_loss_avg[len(train_loss_avg)-2])/train_loss_avg[-1] < args.eps:
+            break
+
+        if epoch == 0:
+            total_time = int(time.time() - start_time)
+            minutes = total_time // 60
+            seconds = total_time - minutes * 60
+            print("Time per Epoch %dmin %dsec" %(minutes, seconds))
+    
+    classification_loss_curves.append(classification_loss)
+    acc_curves.append(train_acc_avg)
+    loss_curves.append(train_loss_avg)
+    plt.figure()
+
+    for i, lam in enumerate(lambdas):
+        plt.plot(acc_curves[i], label="Lambda: %f" % lambdas[i])    
+    plt.title("Accuracy")
+    plt.xlabel("Epoch")
+    plt.ylabel("Accuracy")
+    plt.legend(loc="lower right")
+    plt.savefig("accuracy.png")
+
+    plt.figure()
+    for i, lam in enumerate(lambdas):
+        plt.plot(loss_curves[i], label="Lambda: %f" % lambdas[i])
+    plt.title("Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.legend(loc="upper right")
+    plt.savefig("loss.png")
+
+    if args.classification:
+        plt.figure()
+        for i, lam in enumerate(lambdas):
+            plt.plot(classification_loss_curves[i], label="Lambda: %f" % lambdas[i])
+        plt.title("Classification Loss")
+        plt.xlabel("Epoch")
+        plt.ylabel("C_Loss")
+        plt.legend(loc="upper right")
+        plt.savefig("c_loss.png")
+    
+    plt.figure()
+    plt.plot(tested_epochs, result_acc, label="Test Accuracy over Epochs")
+    plt.title("Test Accuracy over Epochs")
+    plt.xlabel("Epoch")
+    plt.ylabel("Test Accuracy")
+    plt.xticks(tested_epochs)
+    plt.savefig("test_acc_during_training.png")
+
+    plt.figure()
+    plt.plot(tested_epochs, result_vae, label="VAE Test Loss over Epochs")
+    plt.title("VAE Test Loss over Epochs")
+    plt.xlabel("Epoch")
+    plt.ylabel("VAE Loss")
+    plt.xticks(tested_epochs)
+    plt.savefig("test_loss_during_training.png")
+
+    plt.show()
+
 
 if __name__ == "__main__":
     args = config()
@@ -306,3 +474,7 @@ if __name__ == "__main__":
         elif args.model == 'print':
             model = VAE(args)
             model.display()
+
+        elif args.model == 'loop-epoch':
+            model = VAE(args).to(device)
+            loop_epoch(model, train_loader, test_loader, device, args)
