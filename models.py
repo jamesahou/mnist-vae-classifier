@@ -37,7 +37,7 @@ class Encoder(nn.Module):
     def forward(self, x):
         x = self.resnet(x)
         x = x.view(x.size(0), -1)
-        x = self.bn1(self.fc1(x))
+        x = self.bn1(self.fc1(x)) #TODO: Try without linear layers
         x = self.relu(x)
         x = self.bn2(self.fc2(x))
         x = self.relu(x)

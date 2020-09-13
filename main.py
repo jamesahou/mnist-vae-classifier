@@ -17,7 +17,8 @@ loss_curves = []
 acc_curves = []
 classification_loss_curves = []
 #lambdas = [1, 0.5, 0.2, 0.1, 0.01, 0.001, 0.0001, 1e-5, 1e-6, 0]
-lambdas = [1, 0.1, 0.01, 0.001, 0.0001, 1e-5, 1e-6, 0]
+#lambdas = [1, 0.1, 0.01, 0.001, 0.0001, 1e-5, 1e-6, 0]
+lambdas = [1]
 
 def str2bool(v):
     # codes from : https://stackoverflow.com/questions/15008758/parsing-boolean-values-with-argparse
@@ -46,6 +47,7 @@ def config():
     parser.add_argument('--fig_name', default='normal.png', type=str)
     parser.add_argument('--classification', default=True, type=str2bool)
     parser.add_argument('--interval', default=10, type=int)
+    parser.add_argument('--save_data', default=True, type=str2bool)
     args = parser.parse_args()
     return args
 
@@ -63,8 +65,8 @@ def vae_loss(recon_x, x, mu, logvar):
     # Not averaging is the direct implementation of the negative log likelihood,
     # but averaging makes the weight of the other loss term independent of the image resolution.
 
-    #recon_loss = F.binary_cross_entropy(recon_x.view(-1, 3*32*32), x.view(-1, 3*32*32), reduction='sum')
-    recon_loss = F.mse_loss(recon_x.view(-1, 3*32*32), x.view(-1, 3*32*32), reduction='sum')
+    recon_loss = F.binary_cross_entropy(recon_x.view(-1, 3*32*32), x.view(-1, 3*32*32), reduction='sum')
+    #recon_loss = F.mse_loss(recon_x.view(-1, 3*32*32), x.view(-1, 3*32*32), reduction='sum')
     
     # KL-divergence between the prior distribution over latent vectors
     # (the one we are going to sample from when generating new images)
@@ -129,7 +131,7 @@ def train_vae(model, train_loader, device, args):
                 #print("Epoch: [%d/%d], Step [%d/%d], Running Loss: %.4f Loss: %.4f, Classification Accuracy: %.2f Reconstruction Loss: %.4f KL Loss: %.4f Class Loss: %.4f" %(epoch, args.epoch,
                 #    i+1, total_step, loss_tracker//100, loss.item(), correct/total*100, recon_loss.item(), kl_loss.item(), classification_loss.item()))
                 print("Epoch: [%d/%d], Step [%d/%d], Loss: %.4f,  Classification Accuracy: %.2f" % (epoch, args.epoch, i+1, total_step, loss.item(), correct/total*100))
-                if args.model == 'run-thru':
+                if args.model == 'run-thru' and args.save_data:
                     file = open("log.txt", 'w')
                     log.append("Epoch: [%d/%d], Step [%d/%d], Loss: %.4f,  Classification Accuracy: %.2f\n" % (epoch, args.epoch, i+1, total_step, loss.item(), correct/total*100))
                     for line in log:
@@ -179,7 +181,6 @@ def train_classifier(model, train_loader, device, args):
             if (i+1) % 100 == 0:
                 print("Epoch: [%d/%d], Step [%d/%d], Running Loss: %.4f Loss: %.4f, Classification Accuracy: %.2f" %(epoch, args.epoch,
                     i+1, total_step, loss_tracker//100, loss.item(), correct/total*100))
-                
 
 def test_cnn(model, test_loader, device, args):
     correct = 0
@@ -217,7 +218,8 @@ def test_vae(model, test_loader, device, args):
             correct += (predicted == labels).sum().item()
     print('Accuracy of the network on the 10000 test images: %.4f %%' % (100 * correct / total))
     print('The average reconstruction loss on the network is %d' % (loss_sum//counter))
-    if args.model == 'run-thru':
+
+    if args.model == 'run-thru' and args.save_data:
         file = open("log.txt", 'w')
         log.append('Accuracy of the network on the 10000 test images: %.4f %%\n' % (100 * correct / total))
         log.append('The average reconstruction loss on the network is %d\n' % (loss_sum//counter))
@@ -231,7 +233,8 @@ def test_vae(model, test_loader, device, args):
     with torch.no_grad():
         z = torch.randn(64, args.zdim)
         sample = model.decoder(z)
-        save_image(sample.view(64, 3, 32, 32), args.directory)
+        if args.save_data:
+            save_image(sample.view(64, 3, 32, 32), args.directory)
 
 def loop_thru_lambda(trainset, train_loader, testset, test_loader, device, args):
     for i, lam in enumerate(lambdas):
@@ -249,7 +252,8 @@ def loop_thru_lambda(trainset, train_loader, testset, test_loader, device, args)
     plt.xlabel("Epoch")
     plt.ylabel("Accuracy")
     plt.legend(loc="lower right")
-    plt.savefig("accuracy.png")
+    if args.save_data:
+        plt.savefig("accuracy.png")
 
     plt.figure()
     for i, lam in enumerate(lambdas):
@@ -258,7 +262,8 @@ def loop_thru_lambda(trainset, train_loader, testset, test_loader, device, args)
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
     plt.legend(loc="upper right")
-    plt.savefig("loss.png")
+    if args.save_data:
+        plt.savefig("loss.png")
 
     if args.classification:
         plt.figure()
@@ -268,7 +273,8 @@ def loop_thru_lambda(trainset, train_loader, testset, test_loader, device, args)
         plt.xlabel("Epoch")
         plt.ylabel("C_Loss")
         plt.legend(loc="upper right")
-        plt.savefig("c_loss.jpg")
+        if args.save_data:
+            plt.savefig("c_loss.jpg")
     
     plt.show()
 
@@ -321,7 +327,7 @@ def loop_epoch(model, train_loader, test_loader, device, args):
                 #print("Epoch: [%d/%d], Step [%d/%d], Running Loss: %.4f Loss: %.4f, Classification Accuracy: %.2f Reconstruction Loss: %.4f KL Loss: %.4f Class Loss: %.4f" %(epoch, args.epoch,
                 #    i+1, total_step, loss_tracker//100, loss.item(), correct/total*100, recon_loss.item(), kl_loss.item(), classification_loss.item()))
                 print("Epoch: [%d/%d], Step [%d/%d], Loss: %.4f,  Classification Accuracy: %.2f" % (epoch, args.epoch, i+1, total_step, loss.item(), correct/total*100))
-                if args.model == 'run-thru':
+                if args.model == 'run-thru' and args.save_data:
                     file = open("log.txt", 'w')
                     log.append("Epoch: [%d/%d], Step [%d/%d], Loss: %.4f,  Classification Accuracy: %.2f\n" % (epoch, args.epoch, i+1, total_step, loss.item(), correct/total*100))
                     for line in log:
@@ -359,7 +365,7 @@ def loop_epoch(model, train_loader, test_loader, device, args):
             result_acc.append(100 * correct / total)
             result_vae.append(loss_sum//counter)
 
-            if args.model == 'run-thru':
+            if args.model == 'run-thru' and args.save_data:
                 file = open("log.txt", 'w')
                 log.append('Accuracy of the network on the 10000 test images: %.4f %%\n' % (100 * correct / total))
                 log.append('The average reconstruction loss on the network is %d\n' % (loss_sum//counter))
@@ -373,7 +379,8 @@ def loop_epoch(model, train_loader, test_loader, device, args):
             with torch.no_grad():
                 z = torch.randn(64, args.zdim)
                 sample = model.decoder(z)
-                save_image(sample.view(64, 3, 32, 32), "epoch_samples/epoch_sample_%d.png" % epoch)
+                if args.save_data:
+                    save_image(sample.view(64, 3, 32, 32), "epoch_samples/epoch_sample_%d.png" % epoch)
             model.train()
             model.to(device)
 
@@ -397,7 +404,8 @@ def loop_epoch(model, train_loader, test_loader, device, args):
     plt.xlabel("Epoch")
     plt.ylabel("Accuracy")
     plt.legend(loc="lower right")
-    plt.savefig("accuracy.png")
+    if args.save_data:
+        plt.savefig("accuracy.png")
 
     plt.figure()
     for i, lam in enumerate(lambdas):
@@ -406,7 +414,8 @@ def loop_epoch(model, train_loader, test_loader, device, args):
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
     plt.legend(loc="upper right")
-    plt.savefig("loss.png")
+    if args.save_data:
+        plt.savefig("loss.png")
 
     if args.classification:
         plt.figure()
@@ -416,7 +425,8 @@ def loop_epoch(model, train_loader, test_loader, device, args):
         plt.xlabel("Epoch")
         plt.ylabel("C_Loss")
         plt.legend(loc="upper right")
-        plt.savefig("c_loss.png")
+        if args.save_data:
+            plt.savefig("c_loss.png")
     
     plt.figure()
     plt.plot(tested_epochs, result_acc, label="Test Accuracy over Epochs")
@@ -424,7 +434,8 @@ def loop_epoch(model, train_loader, test_loader, device, args):
     plt.xlabel("Epoch")
     plt.ylabel("Test Accuracy")
     plt.xticks(tested_epochs)
-    plt.savefig("test_acc_during_training.png")
+    if args.save_data:
+        plt.savefig("test_acc_during_training.png")
 
     plt.figure()
     plt.plot(tested_epochs, result_vae, label="VAE Test Loss over Epochs")
@@ -432,7 +443,8 @@ def loop_epoch(model, train_loader, test_loader, device, args):
     plt.xlabel("Epoch")
     plt.ylabel("VAE Loss")
     plt.xticks(tested_epochs)
-    plt.savefig("test_loss_during_training.png")
+    if args.save_data:
+        plt.savefig("test_loss_during_training.png")
 
     plt.show()
 
@@ -458,9 +470,6 @@ if __name__ == "__main__":
             if args.test:
                 test_vae(model, test_loader, device, args)
                 model.train()
-                images, labels = iter(test_loader).next()
-                images = images.to(device)
-                labels = labels.to(device)
 
         elif args.model == 'classifier':
             model = CNN(args).to(device)
