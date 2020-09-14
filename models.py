@@ -136,7 +136,8 @@ class Classifier(nn.Module):
         super(Classifier, self).__init__()
         self.args = args
         #self.fc1 = nn.Linear(128*7*7, 10)
-        self.fc1 = nn.Linear(1024, 10)
+        #self.fc1 = nn.Linear(1024, 10)
+        self.fc1 = nn.Linear(self.args.zdim, 10)
 
     def forward(self, z):
         out = self.fc1(z)
@@ -157,8 +158,8 @@ class VAE(nn.Module):
     def forward(self, x):
         latent = self.encoder(x)
         #c = self.classifier(latent.view(-1, 128*7*7))
-        c = self.classifier(latent)
         z, mean, var = self.sampler(latent)
+        c = self.classifier(z)
         out = self.decoder(z)
         return out, c, mean, var
 
