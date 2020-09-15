@@ -16,9 +16,9 @@ log = []
 loss_curves = []
 acc_curves = []
 classification_loss_curves = []
-#lambdas = [1, 0.5, 0.2, 0.1, 0.01, 0.001, 0.0001, 1e-5, 1e-6, 0]
+lambdas = [1, 0.5, 0.2, 0.1, 0.01, 0.001, 0.0001, 1e-5, 1e-6, 0]
 #lambdas = [1, 0.1, 0.01, 0.001, 0.0001, 1e-5, 1e-6, 0]
-lambdas = [1, 1e-4, 1e-6, 0]
+#lambdas = [1, 1e-4, 1e-6, 0]
 
 def str2bool(v):
     # codes from : https://stackoverflow.com/questions/15008758/parsing-boolean-values-with-argparse
