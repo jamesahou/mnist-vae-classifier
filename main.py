@@ -31,7 +31,7 @@ def str2bool(v):
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
 def config():
-    parser = argparse.ArgumentParser(description="MNIST VAE CLASSIFIER")
+    parser = argparse.ArgumentParser(description="VAE CLASSIFIER")
     parser.add_argument('--channels', default=1, type=int)
     parser.add_argument('--cuda', default=True, type=str2bool)
     parser.add_argument('--batch_size', default=128, type=int)
@@ -48,7 +48,8 @@ def config():
     parser.add_argument('--classification', default=True, type=str2bool)
     parser.add_argument('--interval', default=10, type=int)
     parser.add_argument('--save_data', default=True, type=str2bool)
-    args = parser.parse_args()
+    parser.add_argument
+    args = parser.parse_args("--data", default="MNIST", type=str)
     return args
 
 def show_image(img):
@@ -454,14 +455,21 @@ if __name__ == "__main__":
     device = torch.device("cuda:0" if (torch.cuda.is_available() and args.cuda) else "cpu")
 
     #transform = transforms.Compose(
-    #    [transforms.ToTensor()]) 
-    transform = transforms.Compose([transforms.Resize([32, 32]),
-                                transforms.ToTensor(),
-                                transforms.Lambda(lambda x: x.repeat(3, 1, 1)),  # gray -> GRB 3 channel (lambda function)
-                                transforms.Normalize(mean=[0.0, 0.0, 0.0], std=[1.0, 1.0, 1.0])])  # for grayscale images
-    trainset = datasets.MNIST('./data', train=True, download=True, transform=transform)
+    #    [transforms.ToTensor()])
+    if args.data == "MNIST":
+        transform = transforms.Compose([transforms.Resize([32, 32]),
+                                    transforms.ToTensor(),
+                                    transforms.Lambda(lambda x: x.repeat(3, 1, 1)),  # gray -> GRB 3 channel (lambda function)
+                                    transforms.Normalize(mean=[0.0, 0.0, 0.0], std=[1.0, 1.0, 1.0])])  # for grayscale images  
+        trainset = datasets.MNIST('./data', train=True, download=True, transform=transform)
+        testset = datasets.MNIST('./data', train=False, transform=transform, download=True)
+    elif args.data == "CIFAR":
+        transform = transforms.Compose(
+                            [transforms.ToTensor(),
+                            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+        trainset = datasets.CIFAR10('./data', train=True, download=True, transform=transform)
+        testset = datasets.CIFAR10('./data', train=True, download=True, transfrom=transform)
     train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True)
-    testset = datasets.MNIST('./data', train=False, transform=transform, download=True)
     test_loader = torch.utils.data.DataLoader(testset, batch_size=args.batch_size, shuffle=False)
     if args.train:
         if args.model == 'vae':
