@@ -173,7 +173,7 @@ class CNN(nn.Module):
     
     def forward(self, x):
         out = self.extractor(x)
-        out = out.view(-1, 128*7*7)
+        # out = out.view(-1, 128*7*7)
         out = self.classifier(out)
         return out
 

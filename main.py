@@ -11,6 +11,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import numpy as np
 import time
+from PIL import Image
 
 log = []
 loss_curves = []
@@ -48,14 +49,12 @@ def config():
     parser.add_argument('--classification', default=True, type=str2bool)
     parser.add_argument('--interval', default=10, type=int)
     parser.add_argument('--save_data', default=True, type=str2bool)
+    parser.add_argument('--save_model', default=False, type=str2bool)
+    parser.add_argument("--data", default="MNIST", type=str)
     parser.add_argument
-    args = parser.parse_args("--data", default="MNIST", type=str)
+    args = parser.parse_args()
     return args
 
-def show_image(img):
-    img = to_img(img)
-    npimg = img.numpy()
-    plt.imshow(np.transpose(npimg, (1, 2, 0)))
 
 def vae_loss(recon_x, x, mu, logvar):
     # recon_x is the probability of a multivariate Bernoulli distribution p.
@@ -76,6 +75,7 @@ def vae_loss(recon_x, x, mu, logvar):
     
     return recon_loss + 1 * kldivergence
 
+
 def t_loss(inputs, outputs, c, mean, var, labels, args):
     criterion = nn.CrossEntropyLoss()
     classification_loss = criterion(c, labels)    
@@ -86,6 +86,7 @@ def t_loss(inputs, outputs, c, mean, var, labels, args):
 
     vae_l = vae_loss(outputs, inputs, mean, var)
     return classification_loss * c_factor + args.lam * vae_l, classification_loss
+
 
 def train_vae(model, train_loader, device, args):
     model.train()
@@ -153,10 +154,14 @@ def train_vae(model, train_loader, device, args):
 
         if abs(train_loss_avg[-1] - train_loss_avg[len(train_loss_avg)-2])/train_loss_avg[-1] < args.eps:
             break
-    
+
+    if args.save_model:
+        if input("Save [Y/N]: ").lower() == "y":
+            torch.save(model.state_dict(), 'models/vae.pt')
     classification_loss_curves.append(classification_loss)
     acc_curves.append(train_acc_avg)
     loss_curves.append(train_loss_avg)
+
 
 def train_classifier(model, train_loader, device, args):
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
@@ -182,6 +187,10 @@ def train_classifier(model, train_loader, device, args):
             if (i+1) % 100 == 0:
                 print("Epoch: [%d/%d], Step [%d/%d], Running Loss: %.4f Loss: %.4f, Classification Accuracy: %.2f" %(epoch, args.epoch,
                     i+1, total_step, loss_tracker//100, loss.item(), correct/total*100))
+    if args.save_model:
+        if input("Save [Y/N]: ").lower() == "y":
+            torch.save(model.state_dict(), 'models/cnn.pt')
+
 
 def test_cnn(model, test_loader, device, args):
     correct = 0
@@ -196,6 +205,7 @@ def test_cnn(model, test_loader, device, args):
             correct += (predicted == labels).sum().item()
     
     print('Accuracy of the network on the 10000 test images: %.4f %%' % (100 * correct / total))
+
 
 def test_vae(model, test_loader, device, args):
     # test classification
@@ -236,6 +246,7 @@ def test_vae(model, test_loader, device, args):
         sample = model.decoder(z)
         if args.save_data:
             save_image(sample.view(64, 3, 32, 32), args.directory)
+
 
 def loop_thru_lambda(trainset, train_loader, testset, test_loader, device, args):
     for i, lam in enumerate(lambdas):
@@ -278,6 +289,7 @@ def loop_thru_lambda(trainset, train_loader, testset, test_loader, device, args)
             plt.savefig("c_loss.jpg")
     
     plt.show()
+
 
 def loop_epoch(model, train_loader, test_loader, device, args):
     result_acc = []
@@ -450,12 +462,125 @@ def loop_epoch(model, train_loader, test_loader, device, args):
     plt.show()
 
 
+def train_adversarial_example(train_loader, test_loader, device, args):
+    chosen_model = int(input("Choose which model to apply WBAD: 1 - VAE, 2 - CNN: "))
+    if chosen_model == 1:
+        try:
+            model = VAE(args)
+            model.load_state_dict(torch.load("models/vae.pt"))
+        except FileNotFoundError:
+            print("VAE model doesn't exist or isn't saved, please try again later")
+
+    elif chosen_model == 2:
+        try:
+            model = CNN(args)
+            model.load_state_dict(torch.load("models/cnn.pt"))
+        except FileNotFoundError:
+            print("CNN model doesn't exist or isn't saved, please try again later")
+
+    else:
+        print("BAD INPUT: End of Program")
+        return -1
+
+    model.eval()
+
+    epsilon = 0.3
+
+    for i, (image, l) in enumerate(train_loader):
+        img = image.to("cpu")
+        label = l.to("cpu")
+
+    print(img.shape)
+    save_image(img.view(3, 32, 32), "normal_example.png")
+    img.requires_grad = True
+
+    if chosen_model == 1:
+        outputs, classification, mean, var = model(img)
+        loss = t_loss(img, outputs, classification, mean, var, label, args)
+        loss.backward()
+
+    elif chosen_model == 2:
+        classification = model(img)
+        criterion = nn.CrossEntropyLoss()
+        loss = criterion(classification, label)
+        loss.backward()
+    
+    confidencer = nn.Softmax()
+    
+    print(classification)
+    print(confidencer(classification))
+
+    img = img + img.grad.sign() * epsilon
+    save_image(img.view(3, 32, 32), "adversarial_example.png")
+
+
+def test_adversarial_example(args):
+    chosen_model = int(input("Choose which model to apply WBAD: 1 - VAE, 2 - CNN: "))
+    if chosen_model == 1:
+        try:
+            model = VAE(args)
+            model.load_state_dict(torch.load("models/vae.pt"))
+        except FileNotFoundError:
+            print("VAE model doesn't exist or isn't saved, please try again later")
+
+    elif chosen_model == 2:
+        try:
+            model = CNN(args)
+            model.load_state_dict(torch.load("models/cnn.pt"))
+        except FileNotFoundError:
+            print("CNN model doesn't exist or isn't saved, please try again later")
+
+    else:
+        print("BAD INPUT: End of Program")
+        return -1
+    
+    transform = transforms.Compose([transforms.Resize([32, 32]),
+                                    transforms.ToTensor(),  # gray -> GRB 3 channel (lambda function)
+                                    #transforms.Normalize(mean=[0.0, 0.0, 0.0], std=[1.0, 1.0, 1.0])
+                                    ])
+    
+    alt_img = Image.open("adversarial_example.png")
+    alt_img = transform(alt_img).float()
+    alt_img = Variable(torch.Tensor(alt_img), requires_grad=True)
+    alt_img = alt_img.unsqueeze(0)
+    print(alt_img.shape)
+
+    o_img = Image.open("normal_example.png")
+    o_img = transform(o_img).float()
+    o_img = Variable(torch.Tensor(o_img), requires_grad=True)
+    o_img = o_img.unsqueeze(0)
+
+    model.eval()
+    if chosen_model == 1:
+        alt_outputs, alt_classification, alt_mean, alt_var = model(alt_img)
+        o_outputs, o_classification, o_mean, o_var = model(o_img)
+
+    elif chosen_model == 2:
+        alt_classification = model(alt_img)
+        o_classification = model(o_img)
+
+    confidence_fn = nn.Softmax()
+    alt_confidence = confidence_fn(alt_classification)
+    o_confidence = confidence_fn(o_classification)
+    
+    print("Original Confidences (class: confidence%)")
+    for i in range(o_confidence.shape[1]):
+        print(str(i) + ": " + str(o_confidence[0][i].item() * 100) + "%")
+
+    print("Altered Confidences (class: confidence%)")
+    for i in range(alt_confidence.shape[1]):
+        print(str(i) + ": " + str(alt_confidence[0][i].item() * 100) + "%")
+
+
+
 if __name__ == "__main__":
     args = config()
     device = torch.device("cuda:0" if (torch.cuda.is_available() and args.cuda) else "cpu")
 
     #transform = transforms.Compose(
     #    [transforms.ToTensor()])
+    if args.model == "gen_ad" or args.model == "test_ad" or args.model == "ad_run":
+        args.batch_size = 1
     if args.data == "MNIST":
         transform = transforms.Compose([transforms.Resize([32, 32]),
                                     transforms.ToTensor(),
@@ -469,7 +594,10 @@ if __name__ == "__main__":
                             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
         trainset = datasets.CIFAR10('./data', train=True, download=True, transform=transform)
         testset = datasets.CIFAR10('./data', train=True, download=True, transfrom=transform)
-    train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True)
+    if args.batch_size == 1:
+        train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=False)
+    else:
+        train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True)
     test_loader = torch.utils.data.DataLoader(testset, batch_size=args.batch_size, shuffle=False)
     if args.train:
         if args.model == 'vae':
@@ -495,3 +623,13 @@ if __name__ == "__main__":
         elif args.model == 'loop-epoch':
             model = VAE(args).to(device)
             loop_epoch(model, train_loader, test_loader, device, args)
+
+        elif args.model == 'gen_ad':
+            train_adversarial_example(train_loader, test_loader, device, args)
+        
+        elif args.model == "test_ad":
+            test_adversarial_example(args)
+        
+        elif args.model == "ad_run":
+            train_adversarial_example(train_loader, test_loader, device, args)
+            test_adversarial_example(args)
