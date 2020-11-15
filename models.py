@@ -26,6 +26,8 @@ class Encoder(nn.Module):
         super(Encoder, self).__init__()
         self.args = args
         resnet = models.resnet18(pretrained=False)
+        if args.data == "MNIST":
+            resnet.conv1 = torch.nn.Conv2d(args.channels, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
         modules = list(resnet.children())[:-1]
         self.resnet = nn.Sequential(*modules)
         self.relu = nn.ReLU()
@@ -108,11 +110,10 @@ class Decoder(nn.Module):
             nn.BatchNorm2d(8, momentum=0.01),
             nn.ReLU(inplace=True),
         )
-
         self.convTrans8 = nn.Sequential(
-            nn.ConvTranspose2d(in_channels=8, out_channels=3, kernel_size=self.k2, stride=self.s2,
+            nn.ConvTranspose2d(in_channels=8, out_channels=args.channels, kernel_size=self.k2, stride=self.s2,
                                padding=self.pd2),
-            nn.BatchNorm2d(3, momentum=0.01),
+            nn.BatchNorm2d(args.channels, momentum=0.01),
             nn.Sigmoid()    # y = (y1, y2, y3) \in [0 ,1]^3
         )
 
@@ -136,8 +137,8 @@ class Classifier(nn.Module):
         super(Classifier, self).__init__()
         self.args = args
         #self.fc1 = nn.Linear(128*7*7, 10)
+        # self.fc1 = nn.Linear(1024, 10)
         self.fc1 = nn.Linear(1024, 10)
-        #self.fc1 = nn.Linear(self.args.zdim, 10)
 
     def forward(self, z):
         out = self.fc1(z)
@@ -160,6 +161,7 @@ class VAE(nn.Module):
         #c = self.classifier(latent.view(-1, 128*7*7))\
         c = self.classifier(latent)
         z, mean, var = self.sampler(latent)
+        # c = self.classifier(z)
         out = self.decoder(z)
         return out, c, mean, var
 

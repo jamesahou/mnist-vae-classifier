@@ -14,10 +14,12 @@ import time
 from PIL import Image
 
 log = []
+epsilon_log = []
 loss_curves = []
 acc_curves = []
 classification_loss_curves = []
 lambdas = [1, 0.5, 0.2, 0.1, 0.01, 0.001, 0.0001, 1e-5, 1e-6, 0]
+epsilons = [1, 0.5, 0.3, 0.2, 0.15, 0.1, 0.0007]
 #lambdas = [1, 0.1, 0.01, 0.001, 0.0001, 1e-5, 1e-6, 0]
 #lambdas = [1, 1e-4, 1e-6, 0]
 
@@ -51,6 +53,11 @@ def config():
     parser.add_argument('--save_data', default=True, type=str2bool)
     parser.add_argument('--save_model', default=False, type=str2bool)
     parser.add_argument("--data", default="MNIST", type=str)
+    parser.add_argument("--epsilon", default=0.2, type=float)
+    parser.add_argument("--iteration", default=1, type=int)
+    parser.add_argument("--tmodel", default="c", type=str)
+    parser.add_argument("--vmodel", default="c", type=str)
+    parser.add_argument("--attack", default="fgsm", type=str)
     parser.add_argument
     args = parser.parse_args()
     return args
@@ -66,7 +73,7 @@ def vae_loss(recon_x, x, mu, logvar):
     # but averaging makes the weight of the other loss term independent of the image resolution.
 
     #recon_loss = F.binary_cross_entropy(recon_x.view(-1, 3*32*32), x.view(-1, 3*32*32), reduction='sum')
-    recon_loss = F.mse_loss(recon_x.view(-1, 3*32*32), x.view(-1, 3*32*32), reduction='sum')
+    recon_loss = F.mse_loss(recon_x.view(-1, args.channels*32*32), x.view(-1, args.channels*32*32), reduction='sum')
     
     # KL-divergence between the prior distribution over latent vectors
     # (the one we are going to sample from when generating new images)
@@ -245,7 +252,10 @@ def test_vae(model, test_loader, device, args):
         z = torch.randn(64, args.zdim)
         sample = model.decoder(z)
         if args.save_data:
-            save_image(sample.view(64, 3, 32, 32), args.directory)
+            if args.data == "CIFAR":
+                save_image(sample.view(64, args.channels, 32, 32), args.directory)
+            else:
+                save_image(sample.view(64, args.channels, 32, 32), args.directory)
 
 
 def loop_thru_lambda(trainset, train_loader, testset, test_loader, device, args):
@@ -393,7 +403,10 @@ def loop_epoch(model, train_loader, test_loader, device, args):
                 z = torch.randn(64, args.zdim)
                 sample = model.decoder(z)
                 if args.save_data:
-                    save_image(sample.view(64, 3, 32, 32), "epoch_samples/epoch_sample_%d.png" % epoch)
+                    if args.data== "CIFAR":
+                        save_image(sample.view(64, args.channels, 32, 32), "epoch_samples/epoch_sample_%d.png" % epoch)
+                    else:
+                        save_image(sample.view(64, args.channels, 32, 32), "epoch_samples/epoch_sample_%d.png" % epoch)
             model.train()
             model.to(device)
 
@@ -462,16 +475,15 @@ def loop_epoch(model, train_loader, test_loader, device, args):
     plt.show()
 
 
-def train_adversarial_example(train_loader, test_loader, device, args):
-    chosen_model = int(input("Choose which model to apply WBAD: 1 - VAE, 2 - CNN: "))
-    if chosen_model == 1:
+def train_fgsm(train_loader, test_loader, device, args, num=0, iterations=1):
+    if args.tmodel == "v":
         try:
             model = VAE(args)
             model.load_state_dict(torch.load("models/vae.pt"))
         except FileNotFoundError:
             print("VAE model doesn't exist or isn't saved, please try again later")
 
-    elif chosen_model == 2:
+    elif args.tmodel == "c":
         try:
             model = CNN(args)
             model.load_state_dict(torch.load("models/cnn.pt"))
@@ -484,46 +496,54 @@ def train_adversarial_example(train_loader, test_loader, device, args):
 
     model.eval()
 
-    epsilon = 0.3
-
     for i, (image, l) in enumerate(train_loader):
         img = image.to("cpu")
         label = l.to("cpu")
 
-    print(img.shape)
-    save_image(img.view(3, 32, 32), "normal_example.png")
-    img.requires_grad = True
+    if args.model != "ifgsm":
+        if args.data == "CIFAR":
+            save_image(img.view(args.channels, 32, 32), "normal_example.png")
+        else: 
+            save_image(img.view(args.channels, 32, 32), "normal_example.png")
+        img.requires_grad = True
+    elif num != 0:
+        img = Image.open("adversarial_imgs/adversarial_example_%f.png" % (args.epsilon * iterations))
+        img = img.convert('L') 
+        img = transform(img).float()
+        img = Variable(torch.Tensor(img), requires_grad=True)
+        img = img.unsqueeze(0)
+        img.retain_grad()
+    else:
+        img.requires_grad = True
 
-    if chosen_model == 1:
+    if args.tmodel == 'v':
         outputs, classification, mean, var = model(img)
-        loss = t_loss(img, outputs, classification, mean, var, label, args)
+        _, loss = t_loss(img, outputs, classification, mean, var, label, args)
         loss.backward()
 
-    elif chosen_model == 2:
+    elif args.tmodel == 'c':
         classification = model(img)
         criterion = nn.CrossEntropyLoss()
         loss = criterion(classification, label)
         loss.backward()
     
     confidencer = nn.Softmax()
-    
-    print(classification)
-    print(confidencer(classification))
+    img = img + img.grad.sign() * args.epsilon
+    if args.data == "CIFAR":
+        save_image(img.view(args.channels, 32, 32), "adversarial_imgs/adversarial_example_%f.png" % (args.epsilon * iterations))
+    else:
+        save_image(img.view(args.channels, 32, 32), "adversarial_imgs/adversarial_example_%f.png" % (args.epsilon * iterations))
 
-    img = img + img.grad.sign() * epsilon
-    save_image(img.view(3, 32, 32), "adversarial_example.png")
 
-
-def test_adversarial_example(args):
-    chosen_model = int(input("Choose which model to apply WBAD: 1 - VAE, 2 - CNN: "))
-    if chosen_model == 1:
+def test_adversarial_example(args, iterations=1):
+    if args.vmodel == 'v':
         try:
             model = VAE(args)
             model.load_state_dict(torch.load("models/vae.pt"))
         except FileNotFoundError:
             print("VAE model doesn't exist or isn't saved, please try again later")
 
-    elif chosen_model == 2:
+    elif args.vmodel == 'c':
         try:
             model = CNN(args)
             model.load_state_dict(torch.load("models/cnn.pt"))
@@ -539,39 +559,74 @@ def test_adversarial_example(args):
                                     #transforms.Normalize(mean=[0.0, 0.0, 0.0], std=[1.0, 1.0, 1.0])
                                     ])
     
-    alt_img = Image.open("adversarial_example.png")
+    alt_img = Image.open("adversarial_imgs/adversarial_example_%f.png" % (args.epsilon * iterations))
+    alt_img = alt_img.convert('L') 
     alt_img = transform(alt_img).float()
     alt_img = Variable(torch.Tensor(alt_img), requires_grad=True)
     alt_img = alt_img.unsqueeze(0)
-    print(alt_img.shape)
 
     o_img = Image.open("normal_example.png")
+    o_img = o_img.convert('L') 
     o_img = transform(o_img).float()
     o_img = Variable(torch.Tensor(o_img), requires_grad=True)
     o_img = o_img.unsqueeze(0)
 
     model.eval()
-    if chosen_model == 1:
+    if args.vmodel == 'v':
         alt_outputs, alt_classification, alt_mean, alt_var = model(alt_img)
         o_outputs, o_classification, o_mean, o_var = model(o_img)
 
-    elif chosen_model == 2:
+    elif args.vmodel == 'c':
         alt_classification = model(alt_img)
         o_classification = model(o_img)
 
     confidence_fn = nn.Softmax()
     alt_confidence = confidence_fn(alt_classification)
     o_confidence = confidence_fn(o_classification)
-    
-    print("Original Confidences (class: confidence%)")
+
+    print("\nTarget: %s Tester: %s" %(args.tmodel, args.vmodel))
+    print("Epsilon: %f Original Confidences (class: confidence%%)" % (args.epsilon * iterations))
+    if args.save_data:
+        epsilon_log.append("\nTarget: %s Tester: %s\n" %(args.tmodel, args.vmodel))
+        epsilon_log.append("Epsilon: %f Original Confidences (class: confidence%%)\n" %  (args.epsilon * iterations))
     for i in range(o_confidence.shape[1]):
         print(str(i) + ": " + str(o_confidence[0][i].item() * 100) + "%")
-
-    print("Altered Confidences (class: confidence%)")
+        if args.save_data:
+            epsilon_log.append(str(i) + ": " + str(o_confidence[0][i].item() * 100) + "%\n")
+    print("Epsilon: %f Altered Confidences (class: confidence%%)" % (args.epsilon * iterations))
+    if args.save_data:
+        epsilon_log.append('\n')
+        epsilon_log.append("Epsilon: %f Altered Confidences (class: confidence%%)\n" % (args.epsilon * iterations))
     for i in range(alt_confidence.shape[1]):
         print(str(i) + ": " + str(alt_confidence[0][i].item() * 100) + "%")
+        if args.save_data:
+            epsilon_log.append(str(i) + ": " + str(alt_confidence[0][i].item() * 100) + "%\n")
+    
+def loop_thru_epsilon(train_loader, test_loader, device, args):
+    for epsilon in epsilons:
+        args.epsilon = epsilon
+        if args.attack == "fgsm":
+            train_fgsm(train_loader, test_loader, device, args)
+        elif args.attack == "ifgsm":
+            train_ifgsm(train_loader, test_loader, device, args.iteration, args)
+        test_adversarial_example(args, args.iteration)
+        epsilon_log.append("-" * 20 + "\n")
+    
+    write_log(epsilon_log, "epsilon-log.txt")
+    return
 
+def write_log(data, loc):
+    file = open(loc, 'w')
+    for line in data:
+        file.write(line)
+    
+    file.close()
+    return 
 
+def train_ifgsm(train_loader, test_loader, device, iterations, args):
+    args.epsilon = args.epsilon / iterations
+    for i in range(iterations):
+        train_fgsm(train_loader, test_loader, device, args, num=i, iterations=iterations)
 
 if __name__ == "__main__":
     args = config()
@@ -579,16 +634,20 @@ if __name__ == "__main__":
 
     #transform = transforms.Compose(
     #    [transforms.ToTensor()])
-    if args.model == "gen_ad" or args.model == "test_ad" or args.model == "ad_run":
+    if args.model == "gen_ad" or args.model == "test_ad" or args.model == "ad_run" or args.model == "loop_ad" or args.model == "ifgsm":
         args.batch_size = 1
     if args.data == "MNIST":
+        args.channels = 1
         transform = transforms.Compose([transforms.Resize([32, 32]),
                                     transforms.ToTensor(),
-                                    transforms.Lambda(lambda x: x.repeat(3, 1, 1)),  # gray -> GRB 3 channel (lambda function)
-                                    transforms.Normalize(mean=[0.0, 0.0, 0.0], std=[1.0, 1.0, 1.0])])  # for grayscale images  
+                                    # transforms.Lambda(lambda x: x.repeat(3, 1, 1)),  # gray -> GRB 3 channel (lambda function)
+                                    # transforms.Normalize(mean=[0.0, 0.0, 0.0], std=[1.0, 1.0, 1.0])
+                                    transforms.Normalize((0.5,), (0.5,))
+                                    ])  # for grayscale images  
         trainset = datasets.MNIST('./data', train=True, download=True, transform=transform)
         testset = datasets.MNIST('./data', train=False, transform=transform, download=True)
     elif args.data == "CIFAR":
+        args.channels = 3
         transform = transforms.Compose(
                             [transforms.ToTensor(),
                             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
@@ -625,11 +684,20 @@ if __name__ == "__main__":
             loop_epoch(model, train_loader, test_loader, device, args)
 
         elif args.model == 'gen_ad':
-            train_adversarial_example(train_loader, test_loader, device, args)
+            train_fgsm(train_loader, test_loader, device, args)
         
         elif args.model == "test_ad":
             test_adversarial_example(args)
         
         elif args.model == "ad_run":
-            train_adversarial_example(train_loader, test_loader, device, args)
+            train_fgsm(train_loader, test_loader, device, args)
             test_adversarial_example(args)
+            if args.save_data:
+                write_log(epsilon_log, "epsilon-log.txt")
+        
+        elif args.model == "loop_ad":
+            loop_thru_epsilon(train_loader, test_loader, device, args)
+        
+        elif args.model == "ifgsm":
+            train_ifgsm(train_loader, test_loader, device, args.iteration, args)
+            test_adversarial_example(args, args.iteration)
